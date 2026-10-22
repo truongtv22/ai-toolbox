@@ -1,0 +1,91 @@
+name: Build macOS ARM64 Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag (e.g. v1.2.0-beta1 or v1.2.1)'
+        required: true
+        default: 'v1.2.0-beta1'
+        type: string
+      publish_release:
+        description: 'Publish release to GitHub Releases'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  NODE_OPTIONS: --max-old-space-size=4096
+
+jobs:
+  build:
+    name: Build macOS ARM64 DMG & App
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Update models
+        run: node scripts/update-models.mjs
+        continue-on-error: true
+
+      - name: Build Tauri app for macOS ARM64
+        run: |
+          pnpm tauri build --target aarch64-apple-darwin --bundles dmg,app
+
+      - name: Compress .app bundle
+        run: |
+          cd tauri/target/aarch64-apple-darwin/release/bundle/macos
+          tar -czf "AI-Toolbox-macOS-aarch64.app.tar.gz" "AI Toolbox.app"
+          mv "AI-Toolbox-macOS-aarch64.app.tar.gz" ../dmg/
+
+      - name: List generated bundles
+        run: |
+          ls -la tauri/target/aarch64-apple-darwin/release/bundle/dmg/
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-toolbox-macos-arm64
+          path: tauri/target/aarch64-apple-darwin/release/bundle/dmg/*
+
+      - name: Create or Update GitHub Release
+        if: inputs.publish_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: 'AI Toolbox ${{ inputs.version }}'
+          body: |
+            AI Toolbox macOS ARM64 Release.
+
+            ⚠️ Mac cài đặt nếu báo `"Ứng dụng bị hỏng"`:
+            Chạy lệnh sau trong Terminal:
+            ```bash
+            xattr -cr "/Applications/AI Toolbox.app"
+            ```
+          draft: false
+          prerelease: ${{ contains(inputs.version, 'beta') }}
+          files: tauri/target/aarch64-apple-darwin/release/bundle/dmg/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

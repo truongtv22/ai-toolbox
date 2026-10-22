@@ -52,7 +52,7 @@ jobs:
 
       - name: Build Tauri app for macOS ARM64
         run: |
-          pnpm tauri build --target aarch64-apple-darwin --bundles dmg,app
+          pnpm tauri build --ci --target aarch64-apple-darwin --bundles dmg,app -c '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Compress .app bundle
         run: |

@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   getNormalizedToolName,
   getToolVariant,
+  inferNormalizedToolNameFromInput,
 } from '../../../../../features/coding/shared/sessionManager/detail/domain/toolCatalog.ts';
 import {
   enrichSessionMessagesWithToolExecutions,
@@ -37,12 +38,30 @@ test('tool catalog normalizes common aliases', () => {
   assert.equal(getNormalizedToolName('Bash'), 'bash');
   assert.equal(getNormalizedToolName('execute_command'), 'bash');
   assert.equal(getNormalizedToolName('Read'), 'read');
+  assert.equal(getNormalizedToolName('view_file'), 'read');
+  assert.equal(getNormalizedToolName('client_view_file'), 'read');
+  assert.equal(getNormalizedToolName('client_create_file'), 'write');
+  assert.equal(getNormalizedToolName('client_edit_file'), 'edit');
+  assert.equal(getNormalizedToolName('read_url_content'), 'web_fetch');
+  assert.equal(getNormalizedToolName('manage_task'), 'task');
+  assert.equal(getNormalizedToolName('schedule'), 'task');
   assert.equal(getNormalizedToolName('MultiEdit'), 'multi_edit');
   assert.equal(getNormalizedToolName('mcp__filesystem__read_file'), 'mcp');
   assert.equal(getNormalizedToolName('ExitPlanMode'), 'exit_plan_mode');
   assert.equal(getNormalizedToolName('AskUserQuestion'), 'ask_user_question');
   assert.equal(getToolVariant('web_search'), 'web');
   assert.equal(getToolVariant('ExitPlanMode'), 'task');
+  assert.equal(getToolVariant('read_url_content'), 'web');
+  assert.equal(getToolVariant('manage_task'), 'task');
+  assert.equal(getToolVariant('schedule'), 'task');
+});
+
+test('inferNormalizedToolNameFromInput supports PascalCase and ACP fields', () => {
+  assert.equal(inferNormalizedToolNameFromInput({ CommandLine: 'git status' }), 'bash');
+  assert.equal(inferNormalizedToolNameFromInput({ Path: '/path/to/file' }), 'read');
+  assert.equal(inferNormalizedToolNameFromInput({ absolute_path: '/path/to/file' }), 'read');
+  assert.equal(inferNormalizedToolNameFromInput({ Pattern: 'TODO' }), 'grep');
+  assert.equal(inferNormalizedToolNameFromInput({ Query: 'how to test' }), 'web_search');
 });
 
 test('pairToolBlocks merges matching call and result by tool id', () => {

@@ -505,7 +505,7 @@ const AntigravityPage: React.FC = () => {
         >
           <GlobalPromptSettings
             key={`antigravity-prompt-${promptExpandNonce}`}
-            toolName="Antigravity CLI"
+            toolName="Antigravity"
             promptFileName="~/.gemini/config/GEMINI.md"
             service={antigravityPromptApi}
             collapseKey="antigravity-prompt"

@@ -60,16 +60,16 @@ export function getNormalizedToolName(toolName: string | undefined): string {
     return 'bash';
   }
 
-  if (['read', 'read_file', 'file_read', 'view_file', 'open_file'].includes(normalized)) {
+  if (['read', 'read_file', 'file_read', 'view_file', 'open_file', 'client_view_file'].includes(normalized)) {
     return 'read';
   }
-  if (['write', 'write_file', 'create_file', 'file_write'].includes(normalized)) {
+  if (['write', 'write_file', 'create_file', 'file_write', 'client_create_file'].includes(normalized)) {
     return 'write';
   }
   if (['multiedit', 'multi_edit', 'batch_edit', 'multi_file_edit'].includes(normalized)) {
     return 'multi_edit';
   }
-  if (['edit', 'edit_file', 'file_edit', 'replace_in_file'].includes(normalized)) {
+  if (['edit', 'edit_file', 'file_edit', 'replace_in_file', 'client_edit_file'].includes(normalized)) {
     return 'edit';
   }
   if (['apply_patch', 'applypatch', 'patch', 'file_patch'].includes(normalized)) {
@@ -84,7 +84,7 @@ export function getNormalizedToolName(toolName: string | undefined): string {
   if (['glob', 'file_glob', 'find_files', 'folder_search'].includes(normalized)) {
     return 'glob';
   }
-  if (['webfetch', 'web_fetch', 'fetch_url', 'browser_fetch'].includes(normalized)) {
+  if (['webfetch', 'web_fetch', 'fetch_url', 'browser_fetch', 'read_url_content'].includes(normalized)) {
     return 'web_fetch';
   }
   if (['websearch', 'web_search', 'search_web', 'browser_search'].includes(normalized)) {
@@ -102,7 +102,7 @@ export function getNormalizedToolName(toolName: string | undefined): string {
   if (['askuserquestion', 'ask_user_question', 'ask_user'].includes(normalized)) {
     return 'ask_user_question';
   }
-  if (['task', 'subagent_task', 'task_create', 'task_update', 'task_output'].includes(normalized)) {
+  if (['task', 'subagent_task', 'task_create', 'task_update', 'task_output', 'manage_task', 'schedule'].includes(normalized)) {
     return 'task';
   }
   if (['agent', 'subagent', 'delegate', 'create_agent'].includes(normalized)) {
@@ -118,16 +118,22 @@ export function inferNormalizedToolNameFromInput(input: unknown): string {
   }
 
   const record = input as Record<string, unknown>;
-  if (typeof record.command === 'string' || typeof record.cmd === 'string') {
+  if (typeof record.command === 'string' || typeof record.cmd === 'string' || typeof record.CommandLine === 'string') {
     return 'bash';
   }
-  if (typeof record.pattern === 'string') {
+  if (typeof record.pattern === 'string' || typeof record.Pattern === 'string') {
     return 'grep';
   }
-  if (typeof record.file_path === 'string' || typeof record.filePath === 'string' || typeof record.path === 'string') {
+  if (
+    typeof record.file_path === 'string'
+    || typeof record.filePath === 'string'
+    || typeof record.path === 'string'
+    || typeof record.Path === 'string'
+    || typeof record.absolute_path === 'string'
+  ) {
     return 'read';
   }
-  if (typeof record.query === 'string') {
+  if (typeof record.query === 'string' || typeof record.Query === 'string') {
     return 'web_search';
   }
   return 'unknown';

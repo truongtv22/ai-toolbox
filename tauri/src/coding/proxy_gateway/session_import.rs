@@ -768,7 +768,7 @@ fn default_session_roots(db: &SqliteDbState, cli_key: GatewayUsageTool) -> Vec<P
                 roots.push(location.host_path.clone());
             }
             if let Some(home) = dirs::home_dir() {
-                for profile in ["antigravity-cli", "antigravity", "antigravity-ide"] {
+                for profile in ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"] {
                     let root = home.join(".gemini").join(profile);
                     if !roots.contains(&root) {
                         roots.push(root);

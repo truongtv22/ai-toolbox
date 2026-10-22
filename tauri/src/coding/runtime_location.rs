@@ -1752,7 +1752,8 @@ async fn resolve_antigravity_runtime_location_uncached_async(
         .await;
 
     let (path, source) = if let Some(path) = path_info {
-        (PathBuf::from(path), "custom".to_string())
+        let expanded = crate::coding::path_expand::expand_local_path(&path).unwrap_or(path);
+        (PathBuf::from(expanded), "custom".to_string())
     } else {
         resolve_antigravity_path_without_db()
     };

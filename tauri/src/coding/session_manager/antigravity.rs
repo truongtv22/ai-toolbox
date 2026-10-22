@@ -35,62 +35,139 @@ struct HistoryEntry {
     workspace: Option<String>,
 }
 
-pub fn scan_sessions(cli_root: &Path) -> Vec<SessionMeta> {
-    let conversations_dir = cli_root.join("conversations");
-    let Ok(entries) = std::fs::read_dir(&conversations_dir) else {
-        return Vec::new();
-    };
+fn detect_source_type(root: &Path) -> &'static str {
+    let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name == "antigravity-acp" || name.contains("acp") {
+        "acp"
+    } else if name == "antigravity-ide" || name.contains("ide") {
+        "ide"
+    } else if name == "antigravity" {
+        "extension"
+    } else {
+        "cli"
+    }
+}
 
-    let history = load_history_index(cli_root);
-    let mut sessions = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !is_conversation_db(&path) {
-            continue;
-        }
-        let Some(uuid) = conversation_uuid_from_db(&path) else {
+fn read_meta_cwd(root: &Path, uuid: &str) -> Option<String> {
+    let meta_path = root.join("conversations").join(format!("{uuid}.meta"));
+    let content = std::fs::read_to_string(meta_path).ok()?;
+    let value = serde_json::from_str::<Value>(&content).ok()?;
+    value
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn file_modified_nanos(path: &Path) -> u128 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+pub fn scan_sessions(roots: &[PathBuf]) -> Vec<SessionMeta> {
+    let mut best_by_uuid: HashMap<String, (u128, PathBuf, &'static str)> = HashMap::new();
+    let mut history_by_root: HashMap<PathBuf, HashMap<String, HistoryEntry>> = HashMap::new();
+
+    for root in roots {
+        let conversations_dir = root.join("conversations");
+        let Ok(entries) = std::fs::read_dir(&conversations_dir) else {
             continue;
         };
-        if let Some(meta) = build_session_meta(cli_root, &uuid, &history) {
+        let source_type = detect_source_type(root);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !is_conversation_db(&path) {
+                continue;
+            }
+            let Some(uuid) = conversation_uuid_from_db(&path) else {
+                continue;
+            };
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+
+            let should_replace = match best_by_uuid.get(&uuid) {
+                Some((prev_mod, _, _)) => modified > *prev_mod,
+                None => true,
+            };
+            if should_replace {
+                best_by_uuid.insert(uuid, (modified, root.clone(), source_type));
+            }
+        }
+    }
+
+    let mut sessions = Vec::new();
+    for (uuid, (_, root, source_type)) in best_by_uuid {
+        let history = history_by_root
+            .entry(root.clone())
+            .or_insert_with(|| load_history_index(&root));
+        if let Some(meta) = build_session_meta(&root, &uuid, history, source_type) {
             sessions.push(meta);
         }
     }
+    sessions.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
     sessions
 }
 
-pub fn scan_recent_sessions(cli_root: &Path, limit: usize) -> Vec<SessionMeta> {
-    if limit == 0 {
+pub fn scan_recent_sessions(roots: &[PathBuf], limit: usize) -> Vec<SessionMeta> {
+    if limit == 0 || roots.is_empty() {
         return Vec::new();
     }
-    let brain_dir = cli_root.join("brain");
-    if !brain_dir.is_dir() {
-        return Vec::new();
+    let mut all_transcript_files = Vec::new();
+    for root in roots {
+        let brain_dir = root.join("brain");
+        if !brain_dir.is_dir() {
+            continue;
+        }
+        let files = collect_recent_files_by_modified(
+            &brain_dir,
+            limit.saturating_mul(4).max(limit),
+            is_transcript_candidate,
+        );
+        let source_type = detect_source_type(root);
+        for path in files {
+            all_transcript_files.push((path, root.clone(), source_type));
+        }
     }
 
-    let history = load_history_index(cli_root);
-    let transcript_files =
-        collect_recent_files_by_modified(&brain_dir, limit.saturating_mul(4).max(limit), |path| {
-            is_transcript_candidate(path)
-        });
+    all_transcript_files.sort_by(|(path_a, _, _), (path_b, _, _)| {
+        let mod_b = file_modified_nanos(path_b);
+        let mod_a = file_modified_nanos(path_a);
+        mod_b.cmp(&mod_a)
+    });
 
     let mut sessions = Vec::new();
     let mut seen_uuids = HashSet::new();
-    for path in transcript_files {
+    let mut history_by_root: HashMap<PathBuf, HashMap<String, HistoryEntry>> = HashMap::new();
+
+    for (path, root, source_type) in all_transcript_files {
         let Some(uuid) = conversation_uuid_from_transcript(&path) else {
             continue;
         };
         if !seen_uuids.insert(uuid.clone()) {
             continue;
         }
-        // Only surface sessions the CLI can actually resume.
-        if !cli_root
+        // Only surface sessions the root can actually resume.
+        if !root
             .join("conversations")
             .join(format!("{uuid}.db"))
             .is_file()
         {
             continue;
         }
-        if let Some(meta) = build_session_meta(cli_root, &uuid, &history) {
+        let history = history_by_root
+            .entry(root.clone())
+            .or_insert_with(|| load_history_index(&root));
+        if let Some(meta) = build_session_meta(&root, &uuid, history, source_type) {
             sessions.push(meta);
             if sessions.len() >= limit {
                 break;
@@ -98,6 +175,42 @@ pub fn scan_recent_sessions(cli_root: &Path, limit: usize) -> Vec<SessionMeta> {
         }
     }
     sessions
+}
+
+fn is_tool_result_record(record: &Value) -> bool {
+    let record_type = record.get("type").and_then(Value::as_str).unwrap_or("");
+    matches!(
+        record_type,
+        "GENERIC"
+            | "AGENCY_TOOL_CALL"
+            | "RUN_COMMAND"
+            | "SEARCH_WEB"
+            | "READ_URL_CONTENT"
+            | "TOOL_RESULT"
+    )
+}
+
+fn extract_record_content_text(record: &Value) -> Option<String> {
+    if let Some(content) = record.get("content") {
+        let text = match content {
+            Value::String(s) => s.clone(),
+            Value::Array(_) | Value::Object(_) => super::utils::extract_text(content),
+            _ => content.to_string(),
+        };
+        if !text.trim().is_empty() {
+            return Some(text);
+        }
+    }
+    if let Some(output) = record.get("output") {
+        let text = match output {
+            Value::String(s) => s.clone(),
+            _ => output.to_string(),
+        };
+        if !text.trim().is_empty() {
+            return Some(text);
+        }
+    }
+    None
 }
 
 pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
@@ -114,12 +227,42 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
         )
     })?;
 
+    let records = parse_transcript_records(&content);
     let mut result = Vec::new();
-    for record in parse_transcript_records(&content) {
-        let Some(message) = message_from_record(&record) else {
+    let mut consumed_indices = HashSet::new();
+
+    for i in 0..records.len() {
+        if consumed_indices.contains(&i) {
             continue;
-        };
-        result.push(message);
+        }
+        let record = &records[i];
+
+        let has_tool_calls = record
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|calls| !calls.is_empty())
+            .unwrap_or(false);
+
+        let mut tool_results: Vec<(String, Option<bool>)> = Vec::new();
+        if has_tool_calls {
+            let mut j = i + 1;
+            while j < records.len() && is_tool_result_record(&records[j]) {
+                if let Some(text) = extract_record_content_text(&records[j]) {
+                    let is_error = records[j]
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .map(|s| s.eq_ignore_ascii_case("ERROR"))
+                        .or_else(|| records[j].get("is_error").and_then(Value::as_bool));
+                    tool_results.push((text, is_error));
+                }
+                consumed_indices.insert(j);
+                j += 1;
+            }
+        }
+
+        if let Some(message) = message_from_record(record, &tool_results) {
+            result.push(message);
+        }
     }
 
     assign_missing_message_ids(&mut result, PROVIDER_ID);
@@ -155,6 +298,10 @@ pub fn delete_session(path: &Path) -> Result<(), String> {
             errors.push(error);
         }
     }
+    let meta_path = cli_root.join("conversations").join(format!("{uuid}.meta"));
+    if let Err(error) = remove_file_if_exists(&meta_path) {
+        errors.push(error);
+    }
 
     if let Err(error) = remove_dir_if_exists(&cli_root.join("brain").join(&uuid)) {
         errors.push(error);
@@ -168,6 +315,7 @@ fn build_session_meta(
     cli_root: &Path,
     uuid: &str,
     history: &HashMap<String, HistoryEntry>,
+    source_type: &str,
 ) -> Option<SessionMeta> {
     let transcript_path = pick_transcript(cli_root, uuid);
     let history_entry = history.get(uuid);
@@ -188,10 +336,12 @@ fn build_session_meta(
         })
         .unwrap_or_else(|| truncate_summary(uuid, 80));
 
-    let project_dir = history_entry
-        .and_then(|entry| entry.workspace.clone())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let project_dir = read_meta_cwd(cli_root, uuid).or_else(|| {
+        history_entry
+            .and_then(|entry| entry.workspace.clone())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    });
 
     let history_ts = history_entry
         .and_then(|entry| entry.timestamp.as_ref())
@@ -227,7 +377,7 @@ fn build_session_meta(
             project_dir.as_deref(),
             &format!("agy --conversation {uuid}"),
         )),
-        runtime_source: None,
+        runtime_source: Some(source_type.to_string()),
         runtime_distro: None,
     })
 }
@@ -415,7 +565,10 @@ fn parse_transcript_records(content: &str) -> Vec<Value> {
     records
 }
 
-fn message_from_record(record: &Value) -> Option<SessionMessage> {
+fn message_from_record(
+    record: &Value,
+    tool_results: &[(String, Option<bool>)],
+) -> Option<SessionMessage> {
     let source = record.get("source").and_then(Value::as_str)?;
     let role = match source {
         "USER_EXPLICIT" => "user",
@@ -424,7 +577,7 @@ fn message_from_record(record: &Value) -> Option<SessionMessage> {
     };
 
     let record_type = record.get("type").and_then(Value::as_str).unwrap_or("");
-    let blocks = blocks_from_record(record, role);
+    let blocks = blocks_from_record(record, role, tool_results);
     if blocks.is_empty() {
         return None;
     }
@@ -441,7 +594,11 @@ fn message_from_record(record: &Value) -> Option<SessionMessage> {
     Some(message)
 }
 
-fn blocks_from_record(record: &Value, role: &str) -> Vec<SessionMessageBlock> {
+fn blocks_from_record(
+    record: &Value,
+    role: &str,
+    tool_results: &[(String, Option<bool>)],
+) -> Vec<SessionMessageBlock> {
     let mut blocks = Vec::new();
 
     if let Some(thinking) = record
@@ -454,7 +611,7 @@ fn blocks_from_record(record: &Value, role: &str) -> Vec<SessionMessageBlock> {
     }
 
     if role == "assistant" {
-        blocks.extend(tool_blocks_from_record(record));
+        blocks.extend(tool_blocks_from_record(record, tool_results));
     }
 
     let content = record.get("content").map(strip_machine_metadata);
@@ -475,7 +632,10 @@ fn blocks_from_record(record: &Value, role: &str) -> Vec<SessionMessageBlock> {
     blocks
 }
 
-fn tool_blocks_from_record(record: &Value) -> Vec<SessionMessageBlock> {
+fn tool_blocks_from_record(
+    record: &Value,
+    tool_results: &[(String, Option<bool>)],
+) -> Vec<SessionMessageBlock> {
     let Some(calls) = record.get("tool_calls").and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -503,17 +663,29 @@ fn tool_blocks_from_record(record: &Value) -> Vec<SessionMessageBlock> {
             name.to_string(),
             input,
         ));
-        if let Some(result) = call.get("result").or_else(|| call.get("output")) {
+
+        let paired_result = if let Some(result) = call.get("result").or_else(|| call.get("output")) {
             let text = match result {
                 Value::String(text) => text.clone(),
                 _ => result.to_string(),
             };
+            let is_error = call.get("is_error").and_then(Value::as_bool);
+            Some((text, is_error))
+        } else if index < tool_results.len() {
+            Some(tool_results[index].clone())
+        } else if index == 0 && !tool_results.is_empty() {
+            Some(tool_results[0].clone())
+        } else {
+            None
+        };
+
+        if let Some((text, is_error)) = paired_result {
             if !text.trim().is_empty() {
                 blocks.push(tool_result_block(
                     Some(tool_id),
                     Some(name.to_string()),
                     Some(Value::String(text)),
-                    None,
+                    is_error,
                 ));
             }
         }
@@ -700,13 +872,14 @@ not-json-garbage-line
         let cli_root = test_dir.cli_root();
         write_session_tree(&cli_root);
 
-        let sessions = scan_sessions(&cli_root);
+        let sessions = scan_sessions(&[cli_root]);
         assert_eq!(sessions.len(), 1);
         let meta = &sessions[0];
         assert_eq!(meta.session_id, TEST_UUID);
         assert_eq!(meta.provider_id, "antigravity");
         assert_eq!(meta.title.as_deref(), Some("login bug session"));
         assert_eq!(meta.project_dir.as_deref(), Some("/repo/demo"));
+        assert_eq!(meta.runtime_source.as_deref(), Some("cli"));
         let resume = meta.resume_command.as_deref().expect("resume command");
         assert!(
             resume.ends_with("agy --conversation 11111111-2222-4333-8444-555555555555"),
@@ -725,7 +898,7 @@ not-json-garbage-line
         let cli_root = test_dir.cli_root();
         write_session_tree(&cli_root);
 
-        let sessions = scan_sessions(&cli_root);
+        let sessions = scan_sessions(&[cli_root]);
         let messages = load_messages(Path::new(&sessions[0].source_path)).expect("load messages");
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role, "user");
@@ -745,7 +918,7 @@ not-json-garbage-line
         let cli_root = test_dir.cli_root();
         write_session_tree(&cli_root);
 
-        let sessions = scan_recent_sessions(&cli_root, 10);
+        let sessions = scan_recent_sessions(&[cli_root], 10);
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, TEST_UUID);
     }
@@ -756,7 +929,7 @@ not-json-garbage-line
         let cli_root = test_dir.cli_root();
         write_session_tree(&cli_root);
 
-        let sessions = scan_sessions(&cli_root);
+        let sessions = scan_sessions(&[cli_root]);
         let source = Path::new(&sessions[0].source_path);
         assert!(scan_messages_for_query(source, "login bug").expect("query"));
         assert!(!scan_messages_for_query(source, "no-such-phrase").expect("query"));
@@ -768,12 +941,68 @@ not-json-garbage-line
         let cli_root = test_dir.cli_root();
         write_session_tree(&cli_root);
 
-        let sessions = scan_sessions(&cli_root);
+        let sessions = scan_sessions(&[cli_root]);
         assert_eq!(sessions.len(), 1);
         delete_session(Path::new(&sessions[0].source_path)).expect("delete");
-        assert_eq!(scan_sessions(&cli_root).len(), 0);
+        assert_eq!(scan_sessions(&[cli_root]).len(), 0);
         assert!(!cli_root.join("brain").join(TEST_UUID).exists());
         // Deleting again stays idempotent.
         delete_session(Path::new(&sessions[0].source_path)).expect("re-delete");
+    }
+
+    #[test]
+    fn scan_sessions_supports_multiroot_dedup_and_acp_meta_cwd() {
+        let test_dir = TestDir::new("multiroot");
+        let acp_root = test_dir.path.join("antigravity-acp");
+        let ext_root = test_dir.path.join("antigravity");
+        fs::create_dir_all(acp_root.join("conversations")).expect("create acp conversations");
+        fs::create_dir_all(ext_root.join("conversations")).expect("create ext conversations");
+
+        let acp_uuid = "22222222-3333-4444-5555-666666666666";
+        fs::write(
+            acp_root.join("conversations").join(format!("{acp_uuid}.db")),
+            b"acp-db",
+        )
+        .expect("write acp db");
+        fs::write(
+            acp_root.join("conversations").join(format!("{acp_uuid}.meta")),
+            r#"{"cwd": "/Volumes/Media/tools/codeg", "mode_id": "yolo"}"#,
+        )
+        .expect("write acp meta");
+
+        let sessions = scan_sessions(&[acp_root, ext_root]);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, acp_uuid);
+        assert_eq!(sessions[0].runtime_source.as_deref(), Some("acp"));
+        assert_eq!(sessions[0].project_dir.as_deref(), Some("/Volumes/Media/tools/codeg"));
+    }
+
+    #[test]
+    fn load_messages_pairs_subsequent_tool_result_record() {
+        let test_dir = TestDir::new("tool-pairing");
+        let cli_root = test_dir.cli_root();
+        let logs_dir = cli_root
+            .join("brain")
+            .join(TEST_UUID)
+            .join(".system_generated")
+            .join("logs");
+        fs::create_dir_all(&logs_dir).expect("create logs dir");
+        fs::create_dir_all(cli_root.join("conversations")).expect("create conversations");
+        fs::write(cli_root.join("conversations").join(format!("{TEST_UUID}.db")), b"db").expect("write db");
+
+        let transcript = r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-22T10:00:00Z","content":"<USER_REQUEST>run git status</USER_REQUEST>"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-22T10:00:01Z","tool_calls":[{"name":"run_command","args":{"CommandLine":"git status"}}]}
+{"step_index":2,"source":"MODEL","type":"AGENCY_TOOL_CALL","status":"DONE","created_at":"2026-10-22T10:00:02Z","content":"On branch main\nnothing to commit"}
+"#;
+        fs::write(logs_dir.join("transcript.jsonl"), transcript).expect("write transcript");
+
+        let messages = load_messages(&logs_dir.join("transcript.jsonl")).expect("load messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[1].blocks.len(), 2);
+        assert_eq!(messages[1].blocks[0].kind, "tool_call");
+        assert_eq!(messages[1].blocks[1].kind, "tool_result");
+        assert_eq!(messages[1].blocks[1].output, Some(serde_json::json!("On branch main\nnothing to commit")));
     }
 }

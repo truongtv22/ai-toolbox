@@ -313,7 +313,7 @@ struct ExportedSessionFile {
 #[derive(Debug, Clone)]
 enum ToolSessionContext {
     Antigravity {
-        cli_root: PathBuf,
+        roots: Vec<PathBuf>,
     },
     Codex {
         sessions_root: PathBuf,
@@ -649,7 +649,10 @@ impl ToolSessionContext {
                     .unwrap_or_default();
                 format!("codex:{}:{}", sessions_root.display(), state_db)
             }
-            Self::Antigravity { cli_root } => format!("antigravity:{}", cli_root.display()),
+            Self::Antigravity { roots } => {
+                let keys: Vec<String> = roots.iter().map(|p| p.display().to_string()).collect();
+                format!("antigravity:{}", keys.join(";"))
+            }
             Self::ClaudeCode { projects_root } => {
                 format!("claudecode:{}", projects_root.display())
             }
@@ -1174,7 +1177,9 @@ fn collect_quick_local_sessions_with_context(
 }
 
 fn annotate_session_source(mut session: SessionMeta, entry: &SessionContextEntry) -> SessionMeta {
-    session.runtime_source = Some(entry.source.as_str().to_string());
+    if session.runtime_source.is_none() {
+        session.runtime_source = Some(entry.source.as_str().to_string());
+    }
     session.runtime_distro = entry.distro.clone();
     session
 }
@@ -2526,7 +2531,7 @@ fn ensure_snapshot_format(snapshot: &NativeSnapshot, expected: &str) -> Result<(
 
 fn scan_sessions(context: &ToolSessionContext) -> Vec<SessionMeta> {
     let mut sessions = match context {
-        ToolSessionContext::Antigravity { cli_root } => antigravity::scan_sessions(cli_root),
+        ToolSessionContext::Antigravity { roots } => antigravity::scan_sessions(roots),
         ToolSessionContext::Codex { sessions_root, .. } => codex::scan_sessions(sessions_root),
         ToolSessionContext::ClaudeCode { projects_root } => {
             claude_code::scan_sessions(projects_root)
@@ -2583,8 +2588,8 @@ fn scan_sessions(context: &ToolSessionContext) -> Vec<SessionMeta> {
 
 fn scan_recent_sessions(context: &ToolSessionContext, limit: usize) -> Vec<SessionMeta> {
     let mut sessions = match context {
-        ToolSessionContext::Antigravity { cli_root } => {
-            antigravity::scan_recent_sessions(cli_root, limit)
+        ToolSessionContext::Antigravity { roots } => {
+            antigravity::scan_recent_sessions(roots, limit)
         }
         ToolSessionContext::Codex { sessions_root, .. } => {
             codex::scan_recent_sessions(sessions_root, limit)
@@ -2951,7 +2956,7 @@ fn session_context_entry(context: ToolSessionContext) -> SessionContextEntry {
 
 fn context_wsl_info(context: &ToolSessionContext) -> Option<WslLocationInfo> {
     match context {
-        ToolSessionContext::Antigravity { cli_root } => path_wsl_info(cli_root),
+        ToolSessionContext::Antigravity { roots } => roots.first().and_then(path_wsl_info),
         ToolSessionContext::Codex { sessions_root, .. } => path_wsl_info(sessions_root),
         ToolSessionContext::ClaudeCode { projects_root } => path_wsl_info(projects_root),
         ToolSessionContext::GeminiCli { tmp_root } => path_wsl_info(tmp_root),
@@ -3019,9 +3024,13 @@ fn build_default_wsl_session_context(
     let linux_user_root = Some(linux_home.to_string());
 
     match tool {
-        SessionTool::Antigravity => Some(ToolSessionContext::Antigravity {
-            cli_root: wsl_home_path(distro, linux_home, ".gemini/antigravity-cli"),
-        }),
+        SessionTool::Antigravity => {
+            let mut roots = Vec::new();
+            for profile in ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"] {
+                roots.push(wsl_home_path(distro, linux_home, &format!(".gemini/{profile}")));
+            }
+            Some(ToolSessionContext::Antigravity { roots })
+        }
         SessionTool::Codex => {
             let sessions_root = wsl_home_path(distro, linux_home, ".codex/sessions");
             Some(ToolSessionContext::Codex {
@@ -3151,9 +3160,22 @@ async fn resolve_context(
     match tool {
         SessionTool::Antigravity => {
             let runtime_location = get_antigravity_runtime_location_async(db).await?;
-            Ok(ToolSessionContext::Antigravity {
-                cli_root: runtime_location.host_path,
-            })
+            let mut roots = Vec::new();
+            if runtime_location.host_path.exists() {
+                roots.push(runtime_location.host_path.clone());
+            }
+            if let Some(home) = dirs::home_dir() {
+                for profile in ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"] {
+                    let root = home.join(".gemini").join(profile);
+                    if root.is_dir() && !roots.contains(&root) {
+                        roots.push(root);
+                    }
+                }
+            }
+            if roots.is_empty() {
+                roots.push(runtime_location.host_path);
+            }
+            Ok(ToolSessionContext::Antigravity { roots })
         }
         SessionTool::Codex => {
             let runtime_location = get_codex_runtime_location_async(db).await?;

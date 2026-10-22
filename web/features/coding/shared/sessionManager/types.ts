@@ -31,7 +31,7 @@ export interface SessionMeta {
   lastActiveAt?: number;
   sourcePath: string;
   resumeCommand?: string | null;
-  runtimeSource?: 'local' | 'wsl';
+  runtimeSource?: 'local' | 'wsl' | 'cli' | 'extension' | 'ide' | 'acp' | (string & {});
   runtimeDistro?: string | null;
 }
 

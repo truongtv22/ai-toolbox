@@ -19,10 +19,12 @@ interface SessionToolExecutionCardProps {
 const SessionToolExecutionCard: React.FC<SessionToolExecutionCardProps> = ({ block, query, onCopyText }) => {
   const { t } = useTranslation();
   const normalizedBlock = normalizeToolBlock(block);
+  const inputRecord = toRecord(normalizedBlock.input);
   const normalizedToolName = normalizedBlock.normalizedToolName || 'unknown';
   const variant = getToolVariant(normalizedBlock.toolName, normalizedToolName);
   const Icon = getToolIcon(normalizedToolName, normalizedBlock.toolName);
-  const title = getToolDisplayName(normalizedToolName, normalizedBlock.toolName);
+  const actionSummary = stringField(inputRecord, ['toolSummary', 'toolAction']);
+  const title = actionSummary || getToolDisplayName(normalizedToolName, normalizedBlock.toolName);
   const toolId = normalizedBlock.toolId;
 
   const handleCopyToolId = (event: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
@@ -180,11 +182,13 @@ const BashBody: React.FC<{
   query: string;
   onCopyText: (text: string, successText: string) => void | Promise<void>;
 }> = ({ input, query, onCopyText }) => {
-  const commandText = stringField(input, ['command', 'cmd']) || safeJson(input);
+  const description = stringField(input, ['toolAction', 'toolSummary', 'description']);
+  const commandText = stringField(input, ['CommandLine', 'command', 'cmd']) || safeJson(input);
+  const cwd = stringField(input, ['Cwd', 'cwd', 'working_dir', 'workingDir']);
 
   return (
     <div className={styles.toolBodyStack}>
-      <OptionalText value={stringField(input, ['description'])} className={styles.toolDescription} />
+      <OptionalText value={description} className={styles.toolDescription} />
       <CodePanel
         title="Command"
         value={commandText}
@@ -194,9 +198,11 @@ const BashBody: React.FC<{
         copySuccessKey="sessionManager.copyCommandSuccess"
         onCopyText={onCopyText}
       />
+      <PathRow value={cwd} label="Cwd" />
       <MetaChips values={[
-        chipValue('timeout', input.timeout ?? input.timeout_ms),
-        chipValue('background', input.run_in_background ?? input.runInBackground),
+        chipValue('timeout', input.timeout ?? input.timeout_ms ?? input.NotificationTimeoutSeconds),
+        chipValue('wait', input.WaitMsBeforeAsync ? `${input.WaitMsBeforeAsync}ms` : undefined),
+        chipValue('background', input.run_in_background ?? input.runInBackground ?? input.IsDaemon),
       ]}
       />
     </div>
@@ -205,39 +211,48 @@ const BashBody: React.FC<{
 
 const ReadBody: React.FC<{ input: Record<string, unknown> }> = ({ input }) => (
   <div className={styles.toolBodyStack}>
-    <PathRow value={stringField(input, ['file_path', 'filePath', 'path'])} />
+    <OptionalText value={stringField(input, ['toolAction', 'toolSummary', 'description'])} className={styles.toolDescription} />
+    <PathRow value={stringField(input, ['Path', 'absolute_path', 'AbsolutePath', 'target_file', 'file_path', 'filePath', 'path'])} />
     <MetaChips values={[
-      chipValue('offset', input.offset),
-      chipValue('limit', input.limit),
+      chipValue('offset', input.offset ?? input.ByteOffset ?? input.StartLine),
+      chipValue('limit', input.limit ?? input.EndLine),
     ]}
     />
   </div>
 );
 
-const WriteBody: React.FC<{ input: Record<string, unknown>; query: string }> = ({ input, query }) => (
-  <div className={styles.toolBodyStack}>
-    <PathRow value={stringField(input, ['file_path', 'filePath', 'path'])} />
-    {stringField(input, ['content']) ? <CodePanel title="Content" value={stringField(input, ['content'])} query={query} /> : null}
-  </div>
-);
+const WriteBody: React.FC<{ input: Record<string, unknown>; query: string }> = ({ input, query }) => {
+  const content = stringField(input, ['Content', 'code_content', 'content']);
+  return (
+    <div className={styles.toolBodyStack}>
+      <OptionalText value={stringField(input, ['toolAction', 'toolSummary', 'description'])} className={styles.toolDescription} />
+      <PathRow value={stringField(input, ['Path', 'absolute_path', 'AbsolutePath', 'target_file', 'file_path', 'filePath', 'path'])} />
+      {content ? <CodePanel title="Content" value={content} query={query} /> : null}
+    </div>
+  );
+};
 
 const EditBody: React.FC<{ input: Record<string, unknown>; query: string }> = ({ input, query }) => {
   const edits = Array.isArray(input.edits) ? input.edits : [];
+  const target = stringField(input, ['Target', 'target', 'old_string', 'oldString']);
+  const replacement = stringField(input, ['Replacement', 'replacement', 'new_string', 'newString']);
+
   return (
     <div className={styles.toolBodyStack}>
-      <PathRow value={stringField(input, ['file_path', 'filePath', 'path'])} />
+      <OptionalText value={stringField(input, ['toolAction', 'toolSummary', 'description'])} className={styles.toolDescription} />
+      <PathRow value={stringField(input, ['Path', 'absolute_path', 'AbsolutePath', 'target_file', 'file_path', 'filePath', 'path'])} />
       {edits.length > 0 ? (
         <div className={styles.editList}>
           {edits.map((edit, index) => (
             <CodePanel key={index} title={`Edit ${index + 1}`} value={safeJson(edit)} query={query} />
           ))}
         </div>
-      ) : (
+      ) : target || replacement ? (
         <div className={styles.diffGrid}>
-          <CodePanel title="Before" value={stringField(input, ['old_string', 'oldString'])} query={query} />
-          <CodePanel title="After" value={stringField(input, ['new_string', 'newString'])} query={query} />
+          <CodePanel title="Target / Before" value={target} query={query} />
+          <CodePanel title="Replacement / After" value={replacement} query={query} />
         </div>
-      )}
+      ) : null}
       <MetaChips values={[chipValue('replace all', input.replace_all ?? input.replaceAll)]} />
     </div>
   );
@@ -249,10 +264,11 @@ const PatchBody: React.FC<{ input: Record<string, unknown>; query: string }> = (
 
 const GrepBody: React.FC<{ input: Record<string, unknown> }> = ({ input }) => (
   <div className={styles.toolBodyStack}>
-    <PropertyRow label="Pattern" value={stringField(input, ['pattern'])} strong />
-    <PropertyRow label="Path" value={stringField(input, ['path'])} />
-    <PropertyRow label="Glob" value={stringField(input, ['glob'])} />
-    <PropertyRow label="Type" value={stringField(input, ['type'])} />
+    <OptionalText value={stringField(input, ['toolAction', 'toolSummary', 'description'])} className={styles.toolDescription} />
+    <PropertyRow label="Pattern" value={stringField(input, ['Pattern', 'pattern', 'query'])} strong />
+    <PropertyRow label="Path" value={stringField(input, ['Path', 'path'])} />
+    <PropertyRow label="Glob" value={stringField(input, ['Glob', 'glob'])} />
+    <PropertyRow label="Type" value={stringField(input, ['Type', 'type'])} />
     <MetaChips values={[
       chipValue('output', input.output_mode ?? input.outputMode),
       chipValue('limit', input.head_limit ?? input.headLimit),
@@ -266,8 +282,9 @@ const GrepBody: React.FC<{ input: Record<string, unknown> }> = ({ input }) => (
 
 const GlobBody: React.FC<{ input: Record<string, unknown> }> = ({ input }) => (
   <div className={styles.toolBodyStack}>
-    <PropertyRow label="Pattern" value={stringField(input, ['pattern'])} strong />
-    <PropertyRow label="Path" value={stringField(input, ['path'])} />
+    <OptionalText value={stringField(input, ['toolAction', 'toolSummary', 'description'])} className={styles.toolDescription} />
+    <PropertyRow label="Pattern" value={stringField(input, ['Pattern', 'pattern', 'glob'])} strong />
+    <PropertyRow label="Path" value={stringField(input, ['Path', 'path'])} />
   </div>
 );
 
@@ -335,14 +352,17 @@ const PlanBody: React.FC<{ input: Record<string, unknown> }> = ({ input }) => {
 
 const TaskBody: React.FC<{ input: Record<string, unknown>; query: string }> = ({ input, query }) => (
   <div className={styles.toolBodyStack}>
-    <OptionalText value={stringField(input, ['description'])} className={styles.toolDescription} />
+    <OptionalText value={stringField(input, ['toolAction', 'toolSummary', 'description'])} className={styles.toolDescription} />
     <MetaChips values={[
-      chipValue('subagent', input.subagent_type ?? input.subagentType),
-      chipValue('model', input.model),
-      chipValue('background', input.run_in_background ?? input.runInBackground),
+      chipValue('subagent', input.subagent_type ?? input.subagentType ?? input.TypeName),
+      chipValue('action', input.Action ?? input.action),
+      chipValue('task', input.TaskId ?? input.taskId),
+      chipValue('schedule', input.DurationSeconds ? `${input.DurationSeconds}s` : input.CronExpression),
+      chipValue('model', input.model ?? input.Model),
+      chipValue('background', input.run_in_background ?? input.runInBackground ?? input.IsDaemon),
     ]}
     />
-    {stringField(input, ['prompt']) ? <CodePanel title="Prompt" value={stringField(input, ['prompt'])} query={query} /> : null}
+    {stringField(input, ['Prompt', 'prompt']) ? <CodePanel title="Prompt" value={stringField(input, ['Prompt', 'prompt'])} query={query} /> : null}
   </div>
 );
 
@@ -408,8 +428,8 @@ const CodePanel: React.FC<{
   );
 };
 
-const PathRow: React.FC<{ value: string }> = ({ value }) => (
-  value ? <PropertyRow label="Path" value={value} strong /> : null
+const PathRow: React.FC<{ value: string; label?: string }> = ({ value, label = 'Path' }) => (
+  value ? <PropertyRow label={label} value={value} strong /> : null
 );
 
 const PropertyRow: React.FC<{ label: string; value: string; strong?: boolean }> = ({ label, value, strong }) => {
@@ -459,11 +479,28 @@ function toRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function cleanStringValue(val: string): string {
+  let s = val.trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    try {
+      const parsed = JSON.parse(s);
+      if (typeof parsed === 'string') {
+        s = parsed.trim();
+      } else {
+        s = s.slice(1, -1).trim();
+      }
+    } catch {
+      s = s.slice(1, -1).trim();
+    }
+  }
+  return s;
+}
+
 function stringField(record: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === 'string') {
-      return value;
+      return cleanStringValue(value);
     }
   }
   return '';

@@ -41,6 +41,47 @@ const SessionCard = React.memo(function SessionCard({
       : t('sessionManager.sourceMode.wsl')
     : t('sessionManager.sourceMode.local');
 
+  const isProfileSource = session.runtimeSource === 'cli'
+    || session.runtimeSource === 'extension'
+    || session.runtimeSource === 'ide'
+    || session.runtimeSource === 'acp';
+
+  const renderSourceTag = () => {
+    if (isProfileSource) {
+      const tagClassMap: Record<string, string> = {
+        cli: styles.runtimeSourceTagCli,
+        extension: styles.runtimeSourceTagExtension,
+        ide: styles.runtimeSourceTagIde,
+        acp: styles.runtimeSourceTagAcp,
+      };
+      const labelMap: Record<string, string> = {
+        cli: 'CLI',
+        extension: 'Extension',
+        ide: 'IDE',
+        acp: 'ACP',
+      };
+      const source = session.runtimeSource!;
+      return (
+        <Tag bordered={false} className={tagClassMap[source] || styles.runtimeSourceTagLocal}>
+          {labelMap[source] || source.toUpperCase()}
+        </Tag>
+      );
+    }
+
+    if (showRuntimeSourceTag && session.runtimeSource) {
+      return (
+        <Tag
+          bordered={false}
+          className={session.runtimeSource === 'wsl' ? styles.runtimeSourceTagWsl : styles.runtimeSourceTagLocal}
+        >
+          {runtimeSourceLabel}
+        </Tag>
+      );
+    }
+
+    return null;
+  };
+
   return (
     <div
       className={`${styles.sessionCard}${selected ? ` ${styles.sessionCardSelected}` : ''}`}
@@ -64,14 +105,7 @@ const SessionCard = React.memo(function SessionCard({
           </div>
           <div className={styles.sessionMetaRow}>
             <span><ClockCircleOutlined style={{ marginRight: 4 }} />{formatRelativeTime(displayTime, t)}</span>
-            {showRuntimeSourceTag && session.runtimeSource ? (
-              <Tag
-                bordered={false}
-                className={session.runtimeSource === 'wsl' ? styles.runtimeSourceTagWsl : styles.runtimeSourceTagLocal}
-              >
-                {runtimeSourceLabel}
-              </Tag>
-            ) : null}
+            {renderSourceTag()}
             <span>{shortSessionId(session.sessionId)}</span>
             {session.projectDir ? (
               <span className={styles.sessionProjectDir}><FolderOpenOutlined style={{ marginRight: 4 }} />{session.projectDir}</span>

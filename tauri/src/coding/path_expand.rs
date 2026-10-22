@@ -21,7 +21,7 @@ pub fn expand_local_path(path: &str) -> Result<String, String> {
     let mut result = path.to_string();
 
     // Expand ~ to home directory
-    if result.starts_with("~/") || result == "~" {
+    if result.starts_with("~/") || result.starts_with("~\\") || result == "~" {
         if let Some(home) = dirs::home_dir() {
             result = result.replacen("~", &home.to_string_lossy(), 1);
         }

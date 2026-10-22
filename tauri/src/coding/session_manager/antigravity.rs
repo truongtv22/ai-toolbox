@@ -1000,9 +1000,8 @@ not-json-garbage-line
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[1].role, "assistant");
-        assert_eq!(messages[1].blocks.len(), 2);
-        assert_eq!(messages[1].blocks[0].kind, "tool_call");
-        assert_eq!(messages[1].blocks[1].kind, "tool_result");
-        assert_eq!(messages[1].blocks[1].output, Some(serde_json::json!("On branch main\nnothing to commit")));
+        assert_eq!(messages[1].blocks.len(), 1);
+        assert_eq!(messages[1].blocks[0].kind, "tool_execution");
+        assert_eq!(messages[1].blocks[0].output, Some(serde_json::json!("On branch main\nnothing to commit")));
     }
 }

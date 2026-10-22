@@ -2956,7 +2956,7 @@ fn session_context_entry(context: ToolSessionContext) -> SessionContextEntry {
 
 fn context_wsl_info(context: &ToolSessionContext) -> Option<WslLocationInfo> {
     match context {
-        ToolSessionContext::Antigravity { roots } => roots.first().and_then(path_wsl_info),
+        ToolSessionContext::Antigravity { roots } => roots.first().and_then(|p| path_wsl_info(p)),
         ToolSessionContext::Codex { sessions_root, .. } => path_wsl_info(sessions_root),
         ToolSessionContext::ClaudeCode { projects_root } => path_wsl_info(projects_root),
         ToolSessionContext::GeminiCli { tmp_root } => path_wsl_info(tmp_root),

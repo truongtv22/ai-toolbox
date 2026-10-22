@@ -941,10 +941,10 @@ not-json-garbage-line
         let cli_root = test_dir.cli_root();
         write_session_tree(&cli_root);
 
-        let sessions = scan_sessions(&[cli_root]);
+        let sessions = scan_sessions(&[cli_root.clone()]);
         assert_eq!(sessions.len(), 1);
         delete_session(Path::new(&sessions[0].source_path)).expect("delete");
-        assert_eq!(scan_sessions(&[cli_root]).len(), 0);
+        assert_eq!(scan_sessions(&[cli_root.clone()]).len(), 0);
         assert!(!cli_root.join("brain").join(TEST_UUID).exists());
         // Deleting again stays idempotent.
         delete_session(Path::new(&sessions[0].source_path)).expect("re-delete");
